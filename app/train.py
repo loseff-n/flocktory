@@ -30,7 +30,7 @@ def catboost_fit(data_path, cat_features, dataset_source):
         # depth=10, 
         learning_rate=0.05, 
         loss_function='Logloss', 
-        verbose=0
+        verbose=1
     )
 
     model.fit(
@@ -47,11 +47,17 @@ def catboost_fit(data_path, cat_features, dataset_source):
 
 @timing 
 def logreg_fit(data_path, two_feats=False):
+    '''
+    two_feats : ["both", "brands"]
+    '''
     logger.info(f"logreg fit started...")
     # collect data
-    if two_feats:
+    if two_feats == "both":
         data = data_process.get_logreg_train_data_both(data_path)
         x = data[['sex_score_meta', 'sex_score_accepted']]
+    elif two_feats == "brands":
+        data = data_process.get_logreg_train_data_brands(data_path)
+        x = data[['sex_score_meta', 'sex_score_brands']]
     else:
         data = data_process.get_logreg_train_data_meta(data_path)
         x = data[["sex_score_meta"]]
@@ -68,6 +74,30 @@ def logreg_fit(data_path, two_feats=False):
         pickle.dump(model, f)
 
     return model
+
+def logreg_predict(data_path):
+    logger.info(f"preparing data for logreg predict...")
+    data_train, data_test = data_process.logreg_predict_data(data_path)
+    x_train = data_train[["sex_score_meta"]]
+    y = data_train.target
+
+    # 1 run check
+    logger.info(f"logreg fit started...")
+    xtr, xts, ytr, yts = train_test_split(x_train,y, test_size=0.2, random_state=42)
+    model = LogisticRegression()
+    model.fit(xtr, ytr)
+    metrics = calc_metrics(model, pd.concat([xts, yts], axis=1))
+    # 2 run predict
+    logger.info(f"logreg predict started...")
+    model = LogisticRegression()
+    model.fit(x_train, y)
+    y_pred = model.predict(data_test[["sex_score_meta"]])
+    data_test["target"] = y_pred
+    data_test = data_test[["user", "target"]]
+    data_test.to_csv("data/test.csv", index=False)
+    logger.info(f"...prediction completed and saved")
+
+    return model, data_test
     
 
 @timing
