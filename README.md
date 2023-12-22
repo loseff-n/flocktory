@@ -21,7 +21,8 @@ https://drive.google.com/drive/folders/1TbuULTBwu8Xoc9ySr_lS12TTpYgbtUH-
 ### Описание файлов решения:
 *explore_data.ipynb* - исследование json файлов<br>
 *id_replace.ipynb* - парсинг данных, исследование возможностей простых моделей классификации<br>
-*logistic.ipynb* - финальный выбор данных для логистической регрессии<br>
+*logistic.ipynb* - промежуточный выбор данных для логистической регрессии<br>
+*final_logregression.ipynb* - финальная версия логистической регрессии<br>
 *data_process.py | main.py | train.py | utils.py* - catboost<br>
 *flocktory.pptx* - презентация проекта<br>
 <br>
