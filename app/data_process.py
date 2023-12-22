@@ -6,6 +6,11 @@ from tqdm import tqdm
 
 from utils import logger, timing
 
+ORDERS_SCORES = True
+if ORDERS_SCORES:
+    logger.info(f"ORDERS_SCORES MODE ON")
+
+
 @timing
 def read_json(data_path, dataset_type):
     with open(data_path+f"{dataset_type}.json", "rb") as f:
@@ -216,7 +221,8 @@ def read_visits_data(data_path, dataset_type="train"):
 def read_orders_data(data_path, dataset_type="train"):
     logger.info(f"reading {dataset_type} dataset...")
     # clms = ["id", "count", "brand-id", "site-id", "target"]
-    clms = ["id", "count", "brand-id", "site-id","general-category-path", "target"]
+    # clms = ["id", "count", "brand-id", "site-id","general-category-path", "target"]
+    clms = ["id", "count", "brand-id", "site-id", "user", "target"]
     df = pd.DataFrame()
     for f in os.listdir(data_path+f"orders/{dataset_type}/"):
         dfs = pd.read_parquet(data_path+f"orders/{dataset_type}/{f}")
@@ -233,16 +239,74 @@ def read_orders_data(data_path, dataset_type="train"):
             sex_dict_meta = pickle.load(f)
         df["sex_score"] = df["site-id"].map(sex_dict_meta)
         logger.info(df.sex_score.isna().sum())
-    if True:
+    if False: # analyze general-category-path
         df = df.explode("general-category-path").reset_index(drop=True)
         df["general-category-path"] = df["general-category-path"].fillna(-1)
         df["general-category-path"] = df["general-category-path"].astype(str)
 
-        with open("../Downloads/general_categories_mapping_corr.json", "rb") as f:
-            d = json.load(f)
-        df["general-category-path"] = df["general-category-path"].map({list(item.keys())[0]: item['guess'] for item in d})
-        df["general-category-path"] = df["general-category-path"].fillna("-1")
-        logger.info(f"AAAAAAA {df['general-category-path'].isna().sum()}")
+    if ORDERS_SCORES: # adding sex score instead of columns
+        # get & save sex score dicts
+        sex_dict_item = get_sex_score(df, "id") 
+        sex_dict_site = get_sex_score(df, "site-id") 
+        with open("models/sex_dict_item.pkl", "wb") as f:
+            pickle.dump(sex_dict_item, f)
+        with open("models/sex_dict_site.pkl", "wb") as f:
+            pickle.dump(sex_dict_site, f)
+        # map dicts to the new columns
+        df["sex_score_item"] = df["id"].map(sex_dict_item)
+        df["sex_score_site"] = df["site-id"].map(sex_dict_site)
+        logger.info(f"empty sex score item: {df.sex_score_item.isna().sum()}")
+        logger.info(f"empty sex score site: {df.sex_score_site.isna().sum()}")
+        # drop unused columns
+        if True: 
+            del df["id"]
+            del df["site-id"] 
+
+        df = df.groupby('user').agg(
+            {"sex_score_item": 'mean', "sex_score_site": "mean", 'target': 'last'}
+        ).reset_index()
+
+        logger.info(f"COLUMNS {df.columns}")
+
+        del df["user"]
+
+    # convert target to int
+    df.target = (df.target == "male").astype(int)
+
+    return df
+
+def read_orders_data_scores_val(data_path):
+    df = read_data(data_path, "orders", "val")
+    clms = ["id", "count", "brand-id", "site-id", "user", "target"]
+    df = df[clms]
+    df[["brand-id", "site-id"]] = df[["brand-id", "site-id"]].fillna(-1)
+    df[["brand-id", "site-id"]] = df[["brand-id", "site-id"]].astype(int).astype(str)
+
+    # read sex score dicts
+    with open("models/sex_dict_item.pkl", "rb") as f:
+        sex_dict_item = pickle.load(f)
+    with open("models/sex_dict_site.pkl", "rb") as f:
+        sex_dict_site = pickle.load(f)
+
+    # map dicts
+    df["sex_score_item"] = df["id"].map(sex_dict_item)
+    df["sex_score_site"] = df["site-id"].map(sex_dict_site)
+
+    logger.info(f"empty sex score item: {df.sex_score_item.isna().sum()}")
+    logger.info(f"empty sex score site: {df.sex_score_site.isna().sum()}")
+    # drop unused columns
+    if True: 
+        del df["id"]
+        del df["site-id"]
+
+    df = df.groupby('user').agg(
+        {"sex_score_item": 'mean', "sex_score_site": "mean", 'target': 'last'}
+    ).reset_index()
+
+    del df["user"]
+
+    logger.info(f"COLUMNS {df.columns}")
+
     # convert target to int
     df.target = (df.target == "male").astype(int)
 
@@ -269,13 +333,13 @@ def read_meta_data(data_path, dataset_type="train"):
 
 @timing
 def read_data(data_path, dataset_source, dataset_type="train"):
+    # read chunked dataframes from the valid source
     df = pd.DataFrame()
     for f in os.listdir(data_path+f"{dataset_source}/{dataset_type}/"):
         dfs = pd.read_parquet(data_path+f"{dataset_source}/{dataset_type}/{f}")
         df = pd.concat([df,dfs]).reset_index(drop=True)
 
     return df
-
 
 @timing
 def get_sex_score_dict(df):
@@ -285,6 +349,16 @@ def get_sex_score_dict(df):
     sex_dict = dict(zip(df_grouped["site-id"], df_grouped["target_female"]))
 
     return sex_dict
+
+def get_sex_score(df, column):
+    # get share of female in column
+    df = df.drop_duplicates(subset=["user", column])
+    sex_dict = df.groupby(column)["target"].value_counts(normalize=True).unstack().reset_index()[[column, "female"]]
+    sex_dict.female = sex_dict.female.fillna(0)
+    sex_dict = sex_dict.rename(columns={"female": f"sex_score_{column}"})
+    sex_dict[column] = sex_dict[column].astype(str)
+
+    return dict(zip(sex_dict[column], sex_dict[f"sex_score_{column}"]))
 
 @timing
 def get_logreg_train_data_meta(data_path):
@@ -338,6 +412,47 @@ def get_logreg_train_data_both(data_path):
 
     data = data_meta.merge(data_accepted, how="left")
     data = data.dropna().reset_index(drop=False)
+
+    return data
+
+def get_logreg_train_data_brands(data_path):
+    # read data
+    data_meta = read_data(data_path, "meta", "train")
+    data_meta = data_meta[["site-id", "user", "target"]]
+
+    logger.info(f"META READ")
+
+    data_brands = read_data(data_path, "brands", "train")
+    data_brands = data_brands.rename(columns={"visited-universal-brands": "site-id"})
+    data_brands["site-id"] = data_brands["site-id"].astype(int)
+
+    logger.info(f"BRANDS READ")
+
+    # calc sex score
+    sex_dict_meta = get_sex_score_dict(data_meta)
+    logger.info(f"META DICT")
+    sex_dict_brand = get_sex_score_dict(data_brands)
+    logger.info(f"BRANDS DICT")
+
+    # save sex score dicts
+    with open("models/sex_dict_meta.pkl", "wb") as f:
+        pickle.dump(sex_dict_meta, f)
+    with open("models/sex_dict_brands.pkl", "wb") as f:
+        pickle.dump(sex_dict_brand, f)
+
+    # map score
+    data_meta["sex_score_meta"] = data_meta["site-id"].map(sex_dict_meta)
+    data_brands["sex_score_brands"] = data_brands["site-id"].map(sex_dict_brand)
+
+    data_meta = data_meta.groupby('user').agg(
+        {"sex_score_meta": 'mean', 'target': 'last'}
+    ).reset_index()
+    data_brands = data_brands.groupby('user').agg(
+        {"sex_score_brands": 'mean', 'target': 'last'}
+    ).reset_index()
+
+    data = data_meta.merge(data_brands, how="left")
+    data["sex_score_brands"] = data["sex_score_brands"].fillna(0.5)
 
     return data
 
@@ -403,3 +518,71 @@ def get_logreg_val_data_both(data_path):
     result["sex_score_accepted"] = result["sex_score_accepted"].fillna(result["sex_score_accepted"].mean())
 
     return result
+
+@timing
+def get_logreg_val_data_brands(data_path):
+    # read data
+    data_meta = read_data(data_path, "meta", "val")
+    data_meta = data_meta[["site-id", "user", "target"]]
+
+    data_brands = read_data(data_path, "brands", "val")
+    data_brands = data_brands.rename(columns={"visited-universal-brands": "site-id"})
+    data_brands["site-id"] = data_brands["site-id"].astype(int)
+
+    # load sex score
+    with open("models/sex_dict_meta.pkl", "rb") as f:
+        sex_dict_meta = pickle.load(f)
+    with open("models/sex_dict_brands.pkl", "rb") as f:
+        sex_dict_brand = pickle.load(f)
+
+    # map sex score
+    data_meta["sex_score_meta"] = data_meta["site-id"].map(sex_dict_meta)
+    data_brands["sex_score_brands"] = data_brands["site-id"].map(sex_dict_brand)
+
+    # fill empty values
+    data_meta.loc[data_meta.sex_score_meta.isna(), "sex_score_meta"] = data_meta.sex_score_meta.mean()
+    result_meta = data_meta.groupby("user")["sex_score_meta"].mean().reset_index().merge(
+        data_meta.groupby("user")["target"].last().reset_index(),
+        how="left"
+    )
+    data_brands.loc[data_brands.sex_score_brands.isna(), "sex_score_brands"] = data_brands.sex_score_brands.mean()
+    result_brands = data_brands.groupby("user")["sex_score_brands"].mean().reset_index().merge(
+        data_brands.groupby("user")["target"].last().reset_index(),
+        how="left"
+    )
+    
+    # get merged resulting df
+    result = result_meta.merge(
+        result_brands.drop("target", axis=1),
+        how="left", left_on="user", right_on="user"
+    )
+
+    result["sex_score_brands"] = result["sex_score_brands"].fillna(result["sex_score_brands"].mean())
+
+    return result
+
+@timing 
+def logreg_predict_data(data_path):
+    data_train = pd.concat([
+        read_data(data_path, "meta", "train")[["site-id", "user", "target"]],
+        read_data(data_path, "meta", "val")[["site-id", "user", "target"]]
+    ]).reset_index(drop=True)
+
+    # calc sex score & save as dict
+    sex_dict_meta = get_sex_score_dict(data_train)
+    with open("models/sex_dict_meta.pkl", "wb") as f:
+        pickle.dump(sex_dict_meta, f)
+
+    # update the data with the score
+    data_train["sex_score_meta"] = data_train["site-id"].map(sex_dict_meta)
+    data_train = data_train.groupby('user').agg(
+        {"sex_score_meta": 'mean', 'target': 'last'}
+    ).reset_index()
+
+    data_test = read_data(data_path, "meta", "test")[["site-id", "user"]]
+    data_test["sex_score_meta"] = data_test["site-id"].map(sex_dict_meta)
+    data_test = data_test.groupby('user').agg(
+        {"sex_score_meta": 'mean'}
+    ).reset_index()
+
+    return data_train, data_test
